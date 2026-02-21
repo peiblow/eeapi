@@ -36,7 +36,7 @@ func main() {
 		DB:   config.DBConfig{},
 	}
 
-	pub, priv, err := keys.LoadOrCreateKeys("keysStore/keys.dat")
+	pub, priv, err := keys.LoadOrCreateKeys("keysStore/keys.pem")
 	if err != nil {
 		slog.Error("Failed to load or create keys", "error", err)
 		os.Exit(1)
@@ -46,6 +46,13 @@ func main() {
 	slog.SetDefault(logger)
 
 	server := api.NewServer(cfg, svm, db, pub, priv)
+
+	token, err := server.GenerateJWT()
+	if err != nil {
+		slog.Error("Failed to generate JWT token", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("Generated JWT token", "token", token)
 
 	if err := server.Run(); err != nil {
 		slog.Error("Server failed to start", "error", err)

@@ -25,15 +25,15 @@ func (s *Server) mount() http.Handler {
 		w.Write([]byte("OK"))
 	})
 
-	authHandler := handlers.NewAuthHandler(service.NewUserService(s.db))
+	// authHandler := handlers.NewAuthHandler(service.NewUserService(s.db))
 
-	r.Route("/auth", func(r chi.Router) {
-		r.Post("/login", authHandler.Login)
-		r.Post("/register", authHandler.Register)
-	})
+	// r.Route("/auth", func(r chi.Router) {
+	// 	r.Post("/login", authHandler.Login)
+	// 	r.Post("/register", authHandler.Register)
+	// })
 
 	r.Route("/", func(r chi.Router) {
-		r.Use(auth.JWTMiddleware)
+		r.Use(auth.JWTMiddleware(s.pub))
 
 		contractSvc := service.NewContractService(s.svm, s.db, s.priv, s.pub)
 		r.Post("/contracts/deploy", handlers.DeployHandler(contractSvc))
