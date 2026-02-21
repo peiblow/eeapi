@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/peiblow/eeapi/internal/config"
 	"github.com/peiblow/eeapi/internal/database/postgres"
 	"github.com/peiblow/eeapi/internal/swp"
@@ -39,20 +38,4 @@ func (s *Server) Run() error {
 
 	log.Printf("Server started at %s", srv.Addr)
 	return srv.ListenAndServe()
-}
-
-func (s *Server) GenerateJWT() (string, error) {
-	token := jwt.NewWithClaims(jwt.SigningMethodEdDSA, jwt.MapClaims{
-		"iss": "bff-service",
-		"aud": "eeapi",
-		"exp": time.Now().Add(5 * time.Minute).Unix(),
-		"iat": time.Now().Unix(),
-	})
-
-	signedToken, err := token.SignedString(s.priv)
-	if err != nil {
-		return "", err
-	}
-
-	return signedToken, nil
 }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/peiblow/eeapi/internal/blocks"
 	"github.com/peiblow/eeapi/internal/database/postgres"
 	"github.com/peiblow/eeapi/internal/keys"
 	"github.com/peiblow/eeapi/internal/repository"
@@ -141,7 +142,6 @@ func (s *contractService) ExecuteContract(ctx context.Context, contractID string
 		return nil, err
 	}
 
-	// we should also save the execution and journal as block in the database
 	previousBlock, err := s.blockDB.GetLastBlock(ctx)
 	if err != nil {
 		slog.Error("Failed to retrieve last block", "error", err)
@@ -154,7 +154,7 @@ func (s *contractService) ExecuteContract(ctx context.Context, contractID string
 		return nil, err
 	}
 
-	journalHashRaw := sha256.Sum256(journalBytes)
+	journalHashRaw := sha256.Sum256(append(journalBytes, []byte(fmt.Sprintf("%d", timestamp))...))
 	journalHash := "0x" + hex.EncodeToString(journalHashRaw[:])
 
 	blockData := fmt.Sprintf(
@@ -188,6 +188,11 @@ func (s *contractService) ExecuteContract(ctx context.Context, contractID string
 		FunctionName: payload.Function,
 		Journal:      encryptedJournal,
 	}
+
+	if err := blocks.VerifyBlock(*previousBlock, *block, journalBytes, s.pubKey); err != nil {
+		return nil, err
+	}
+	slog.Info("Block verification successful", "block_hash", block.Hash)
 
 	if err := s.blockDB.SaveBlock(ctx, block); err != nil {
 		slog.Error("Failed to save execution block", "error", err)

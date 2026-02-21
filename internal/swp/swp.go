@@ -66,6 +66,7 @@ type ExecResponse struct {
 	Function     string        `json:"function"`
 	Journal      []interface{} `json:"journal"`
 	ExecPrice    int64         `json:"exec_price"`
+	Timestamp    int64         `json:"timestamp"`
 }
 
 type PingPayload struct {

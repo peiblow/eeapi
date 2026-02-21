@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/peiblow/eeapi/internal/api"
+	"github.com/peiblow/eeapi/internal/auth"
 	"github.com/peiblow/eeapi/internal/config"
 	"github.com/peiblow/eeapi/internal/database/postgres"
 	"github.com/peiblow/eeapi/internal/keys"
@@ -47,7 +48,7 @@ func main() {
 
 	server := api.NewServer(cfg, svm, db, pub, priv)
 
-	token, err := server.GenerateJWT()
+	token, err := auth.GenerateJWT(priv)
 	if err != nil {
 		slog.Error("Failed to generate JWT token", "error", err)
 		os.Exit(1)
