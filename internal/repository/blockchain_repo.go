@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/peiblow/eeapi/internal/database/postgres"
 	"github.com/peiblow/eeapi/internal/schema"
 )
@@ -15,7 +14,7 @@ import (
 type BlockRepository interface {
 	SaveBlock(ctx context.Context, block *schema.Block) error
 	GetBlockByID(ctx context.Context, id string) (*schema.Block, error)
-	GetLastBlock(ctx context.Context) (*schema.Block, error)
+	GetLastContractBlock(ctx context.Context, contractId string) (*schema.Block, error)
 }
 
 type PsqlBlockRepository struct {
@@ -28,10 +27,11 @@ func NewPsqlBlockRepository(db *postgres.DB) BlockRepository {
 
 func (r *PsqlBlockRepository) SaveBlock(ctx context.Context, block *schema.Block) error {
 	query := `
-		INSERT INTO blocks (hash, timestamp, previous_hash, journal_hash, signature, contract_id, function_name, journal)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO blocks (block_index, hash, timestamp, previous_hash, journal_hash, signature, contract_id, function_name, journal)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 	`
 	_, err := r.db.ExecContext(ctx, query,
+		block.BlockIndex,
 		block.Hash,
 		block.Timestamp,
 		block.PreviousHash,
@@ -68,13 +68,13 @@ func (r *PsqlBlockRepository) GetBlockByID(ctx context.Context, id string) (*sch
 	return &block, nil
 }
 
-func (r *PsqlBlockRepository) GetLastBlock(ctx context.Context) (*schema.Block, error) {
-	query := `SELECT hash, timestamp, previous_hash, journal_hash, signature, contract_id, function_name, journal FROM blocks ORDER BY timestamp DESC LIMIT 1`
-
-	row := r.db.QueryRowContext(ctx, query)
+func (r *PsqlBlockRepository) GetLastContractBlock(ctx context.Context, contractId string) (*schema.Block, error) {
+	query := `SELECT block_index, hash, timestamp, previous_hash, journal_hash, signature, contract_id, function_name, journal FROM blocks WHERE contract_id = $1 ORDER BY timestamp DESC LIMIT 1`
+	row := r.db.QueryRowContext(ctx, query, contractId)
 
 	var block schema.Block
 	err := row.Scan(
+		&block.BlockIndex,
 		&block.Hash,
 		&block.Timestamp,
 		&block.PreviousHash,
@@ -84,10 +84,11 @@ func (r *PsqlBlockRepository) GetLastBlock(ctx context.Context) (*schema.Block, 
 		&block.FunctionName,
 		&block.Journal,
 	)
+
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			slog.Info("No blocks found in database, creating genesis block")
-			return r.createGenesisBlock(ctx)
+			return r.createGenesisBlock(ctx, contractId)
 		}
 		return nil, err
 	}
@@ -95,27 +96,29 @@ func (r *PsqlBlockRepository) GetLastBlock(ctx context.Context) (*schema.Block, 
 	return &block, nil
 }
 
-func (r *PsqlBlockRepository) createGenesisBlock(ctx context.Context) (*schema.Block, error) {
+func (r *PsqlBlockRepository) createGenesisBlock(ctx context.Context, contractId string) (*schema.Block, error) {
 	slog.Info("No blocks found in database, creating genesis block")
 	genesis := &schema.Block{
+		BlockIndex:   1,
 		Hash:         "0xGENESIS_HASH",
 		Timestamp:    time.Now().Unix(),
 		PreviousHash: "0",
 		JournalHash:  "0",
 		Signature:    []byte("GENESIS_SIGNATURE"),
-		ContractID:   uuid.NewString(),
+		ContractID:   contractId,
 		FunctionName: "genesis",
 		Journal:      []byte{},
 	}
 
 	query := `
 		INSERT INTO blocks (
-			hash, timestamp, previous_hash, journal_hash, signature, contract_id, function_name, journal
+			block_index, hash, timestamp, previous_hash, journal_hash, signature, contract_id, function_name, journal
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
 	`
 
 	_, err := r.db.ExecContext(ctx, query,
+		genesis.BlockIndex,
 		genesis.Hash,
 		genesis.Timestamp,
 		genesis.PreviousHash,

@@ -46,7 +46,9 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
-	server := api.NewServer(cfg, svm, db, pub, priv)
+	locker := config.NewContractLocker()
+
+	server := api.NewServer(cfg, svm, db, pub, priv, locker)
 
 	token, err := auth.GenerateJWT(priv)
 	if err != nil {

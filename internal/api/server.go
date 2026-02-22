@@ -17,15 +17,18 @@ type Server struct {
 	db   *postgres.DB
 	pub  ed25519.PublicKey
 	priv ed25519.PrivateKey
+
+	locker *config.ContractLocker
 }
 
-func NewServer(cfg config.Config, svm *swp.SwpClient, db *postgres.DB, pub []byte, priv []byte) *Server {
+func NewServer(cfg config.Config, svm *swp.SwpClient, db *postgres.DB, pub []byte, priv []byte, locker *config.ContractLocker) *Server {
 	return &Server{
 		cfg,
 		svm,
 		db,
 		pub,
 		priv,
+		locker,
 	}
 }
 

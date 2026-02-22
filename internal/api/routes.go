@@ -35,7 +35,7 @@ func (s *Server) mount() http.Handler {
 	r.Route("/", func(r chi.Router) {
 		r.Use(auth.JWTMiddleware(s.pub))
 
-		contractSvc := service.NewContractService(s.svm, s.db, s.priv, s.pub)
+		contractSvc := service.NewContractService(s.svm, s.db, s.priv, s.pub, s.locker)
 		r.Post("/contracts/deploy", handlers.DeployHandler(contractSvc))
 		r.Post("/contracts/{id}/execute", handlers.ExecHandler(contractSvc))
 	})

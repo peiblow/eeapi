@@ -1,6 +1,7 @@
 package schema
 
 type Block struct {
+	BlockIndex   int64  `json:"block_index"`
 	Hash         string `json:"hash"`
 	Timestamp    int64  `json:"timestamp"`
 	PreviousHash string `json:"previous_hash"`

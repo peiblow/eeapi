@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/peiblow/eeapi/internal/blocks"
+	"github.com/peiblow/eeapi/internal/config"
 	"github.com/peiblow/eeapi/internal/database/postgres"
 	"github.com/peiblow/eeapi/internal/keys"
 	"github.com/peiblow/eeapi/internal/repository"
@@ -30,15 +31,17 @@ type contractService struct {
 	blockDB   repository.BlockRepository
 	privKey   []byte
 	pubKey    []byte
+	locker    *config.ContractLocker
 }
 
-func NewContractService(swpClient *swp.SwpClient, db *postgres.DB, privKey []byte, pubKey []byte) ContractService {
+func NewContractService(swpClient *swp.SwpClient, db *postgres.DB, privKey []byte, pubKey []byte, locker *config.ContractLocker) ContractService {
 	return &contractService{
 		swpClient: swpClient,
 		db:        repository.NewPsqlContractRepository(db),
 		blockDB:   repository.NewPsqlBlockRepository(db),
 		privKey:   privKey,
 		pubKey:    pubKey,
+		locker:    locker,
 	}
 }
 
@@ -107,6 +110,9 @@ func (s *contractService) DeployContract(ctx context.Context, payload *swp.Deplo
 }
 
 func (s *contractService) ExecuteContract(ctx context.Context, contractID string, payload *swp.ExecPayload) (*swp.WireResponse, error) {
+	s.locker.Lock(contractID)
+	defer s.locker.Unlock(contractID)
+
 	slog.Info("Executing contract", "contract_id", contractID, "function", payload.Function)
 	timestamp := time.Now().UTC().UnixMilli()
 
@@ -137,12 +143,16 @@ func (s *contractService) ExecuteContract(ctx context.Context, contractID string
 		return nil, err
 	}
 
+	if resp.Success == false {
+		return &resp, fmt.Errorf("contract execution failed: %s", string(resp.Error))
+	}
+
 	var respData swp.ExecResponse
 	if err := json.Unmarshal(resp.Data, &respData); err != nil {
 		return nil, err
 	}
 
-	previousBlock, err := s.blockDB.GetLastBlock(ctx)
+	previousBlock, err := s.blockDB.GetLastContractBlock(ctx, contractID)
 	if err != nil {
 		slog.Error("Failed to retrieve last block", "error", err)
 		return nil, err
@@ -179,6 +189,7 @@ func (s *contractService) ExecuteContract(ctx context.Context, contractID string
 
 	slog.Info("Saving execution block", "block_hash", blockHash, "previous_hash", previousBlock.Hash, "journal_hash", journalHash, "contract_id", contractID, "function", payload.Function)
 	block := &schema.Block{
+		BlockIndex:   previousBlock.BlockIndex + 1,
 		Hash:         blockHash,
 		Timestamp:    timestamp,
 		PreviousHash: previousBlock.Hash,
