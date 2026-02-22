@@ -77,6 +77,10 @@ func (s *contractService) DeployContract(ctx context.Context, payload *swp.Deplo
 		return nil, err
 	}
 
+	if resp.Success == false {
+		return &resp, fmt.Errorf("contract deployment failed: %s", string(resp.Error))
+	}
+
 	var respData swp.DeployResponse
 	if err := json.Unmarshal(resp.Data, &respData); err != nil {
 		return nil, err
