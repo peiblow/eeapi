@@ -21,8 +21,8 @@ WORKDIR /app
 
 RUN apk add --no-cache ca-certificates tzdata && \
     adduser -D -u 1001 synx && \
-    mkdir -p /app/keysStore && \
-    chown -R synx:synx /app
+    mkdir -p /app/keysStore /data/artifacts && \
+    chown -R synx:synx /app /data
 
 COPY --from=builder /bin/eeapi /bin/eeapi
 

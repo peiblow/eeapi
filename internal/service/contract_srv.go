@@ -18,33 +18,55 @@ import (
 	"github.com/peiblow/eeapi/internal/keys"
 	"github.com/peiblow/eeapi/internal/repository"
 	"github.com/peiblow/eeapi/internal/schema"
+	"github.com/peiblow/eeapi/internal/store"
 	"github.com/peiblow/eeapi/internal/swp"
 )
 
 type ContractService interface {
-	DeployContract(ctx context.Context, payload *swp.DeployPayload) (*swp.WireResponse, error)
+	DeployContract(ctx context.Context, in *DeployInput) (*DeployResult, error)
 	ExecuteContract(ctx context.Context, contractID string, payload *swp.ExecPayload) (*ExecuteResult, error)
 	TraceContext(ctx context.Context, contextID string) (*TraceOutput, error)
 }
 
 type contractService struct {
-	swpClient *swp.SwpClient
-	db        repository.ContractRepository
-	blockDB   repository.BlockRepository
-	privKey   []byte
-	pubKey    []byte
-	locker    *config.ContractLocker
+	swpClient   *swp.SwpClient
+	db          repository.ContractRepository
+	blockDB     repository.BlockRepository
+	privKey     []byte
+	pubKey      []byte
+	locker      *config.ContractLocker
+	artifactDir string
 }
 
-func NewContractService(swpClient *swp.SwpClient, db *postgres.DB, privKey []byte, pubKey []byte, locker *config.ContractLocker) ContractService {
+func NewContractService(swpClient *swp.SwpClient, db *postgres.DB, privKey []byte, pubKey []byte, locker *config.ContractLocker, artifactDir string) ContractService {
 	return &contractService{
-		swpClient: swpClient,
-		db:        repository.NewPsqlContractRepository(db),
-		blockDB:   repository.NewPsqlBlockRepository(db),
-		privKey:   privKey,
-		pubKey:    pubKey,
-		locker:    locker,
+		swpClient:   swpClient,
+		db:          repository.NewPsqlContractRepository(db),
+		blockDB:     repository.NewPsqlBlockRepository(db),
+		privKey:     privKey,
+		pubKey:      pubKey,
+		locker:      locker,
+		artifactDir: artifactDir,
 	}
+}
+
+// DeployInput is a prebuilt contract submitted to /deploy. The artifact is
+// compiled by the synx CLI; EEAPI no longer compiles.
+type DeployInput struct {
+	ContractName string
+	Version      string
+	Owner        string
+	Artifact     []byte // the marshaled ContractArtifact (.snxb)
+	AgentHash    string
+	AgentName    string
+	AgentVersion string
+}
+
+type DeployResult struct {
+	ContractHash    string
+	ContractName    string
+	ContractOwner   string
+	ContractVersion string
 }
 
 type ArtifactMetadata struct {
@@ -83,64 +105,57 @@ type EnrichedJournal struct {
 	Audit  []swp.AuditLog         `json:"audit"`
 }
 
-func (s *contractService) DeployContract(ctx context.Context, payload *swp.DeployPayload) (*swp.WireResponse, error) {
-
+func (s *contractService) DeployContract(ctx context.Context, in *DeployInput) (*DeployResult, error) {
 	createdAt := time.Now().UTC()
-	hashInput := fmt.Sprintf("%v:%v:%v:%v", payload.Owner, payload.ContractName, payload.Version, createdAt.UnixMilli())
+	hashInput := fmt.Sprintf("%v:%v:%v:%v", in.Owner, in.ContractName, in.Version, createdAt.UnixMilli())
 	hashBytes := sha256.Sum256([]byte(hashInput))
 	hash := "0x" + hex.EncodeToString(hashBytes[:])
 
-	msg := swp.WireMesage{
-		Type: swp.DEPLOY,
-		ID:   uuid.New().String(),
-		Data: swp.DeployPayload{
-			Hash:         hash,
-			ContractName: payload.ContractName,
-			Version:      payload.Version,
-			Owner:        payload.Owner,
-			Source:       payload.Source,
-		},
+	// The artifact is already compiled by the CLI — validate it parses before
+	// we store it; the bytes themselves go to the content store, not the DB.
+	var probe swp.ArtifactMetadata
+	if err := json.Unmarshal(in.Artifact, &probe); err != nil {
+		return nil, fmt.Errorf("invalid artifact: %w", err)
 	}
 
-	var resp swp.WireResponse
-	if err := s.swpClient.Send(msg, &resp); err != nil {
+	// 1) Write the artifact to the shared content store first (file before DB
+	//    row, so we never have a contract row pointing at a missing artifact).
+	if err := store.PutArtifact(s.artifactDir, hash, in.Artifact); err != nil {
 		return nil, err
 	}
+	slog.Info("Artifact stored", "hash", hash, "dir", s.artifactDir)
 
-	if resp.Success == false {
-		return &resp, fmt.Errorf("contract deployment failed: %s", string(resp.Error))
-	}
-
-	var respData swp.DeployResponse
-	if err := json.Unmarshal(resp.Data, &respData); err != nil {
-		return nil, err
-	}
-
+	// 2) Persist metadata. The artifact blob is still written to Postgres
+	//    because ExecuteContract currently loads it from there; once exec reads
+	//    the .snxb file, the contract_artifacts blob can be dropped.
 	if err := s.db.SaveAgentMeta(ctx, &swp.AgentMeta{
-		Hash:    respData.Agent.Hash,
-		Name:    respData.Agent.Name,
-		Version: respData.Agent.Version,
+		Hash:    in.AgentHash,
+		Name:    in.AgentName,
+		Version: in.AgentVersion,
 	}); err != nil {
 		return nil, err
 	}
-	slog.Info("Agent meta saved successfully", "agent_hash", respData.Agent.Hash)
 
-	if err := s.db.SaveContractArtifact(ctx, hash, respData.Agent.Hash, &respData.ContractArtifact); err != nil {
+	if err := s.db.SaveContractArtifact(ctx, hash, in.AgentHash); err != nil {
 		return nil, err
 	}
-	slog.Info("Contract artifact saved successfully", "contract_hash", respData.ContractHash)
 
 	if err := s.db.SaveContract(ctx, &schema.Contract{
-		Name:         respData.ContractName,
-		Owner:        respData.ContractOwner,
+		Name:         in.ContractName,
+		Owner:        in.Owner,
 		ArtifactHash: hash,
 		CreatedAt:    createdAt.UnixMilli(),
 	}); err != nil {
 		return nil, err
 	}
-	slog.Info("Contract deployed successfully", "contract_hash", respData.ContractHash)
+	slog.Info("Contract deployed successfully", "contract_hash", hash, "name", in.ContractName)
 
-	return &resp, nil
+	return &DeployResult{
+		ContractHash:    hash,
+		ContractName:    in.ContractName,
+		ContractOwner:   in.Owner,
+		ContractVersion: in.Version,
+	}, nil
 }
 
 func (s *contractService) ExecuteContract(ctx context.Context, contractID string, payload *swp.ExecPayload) (*ExecuteResult, error) {
@@ -171,13 +186,23 @@ func (s *contractService) ExecuteContract(ctx context.Context, contractID string
 	auditLogs = append(auditLogs, swp.AuditLog{Time: time.Now().UTC().Format("15:04:05.000"), Event: fmt.Sprintf("Contract loaded: %s", contract.ArtifactHash), Actor: "system"})
 
 	// ── artifact.load ─────────────────────────────────────────────────────────
+	// The artifact is the source of truth in the content store; read the .snxb
+	// file by hash and unmarshal it.
 	stepStart = time.Now()
-	artifact, err := s.db.GetContractArtifactByHash(ctx, contract.ArtifactHash)
+	artifactBlob, err := store.GetArtifact(s.artifactDir, contract.ArtifactHash)
 	if err != nil {
 		slog.Error("Failed to retrieve contract artifact", "artifact_hash", contract.ArtifactHash, "error", err)
 		return &ExecuteResult{
 			BlockHash: "",
 			Response:  &swp.WireResponse{Type: swp.EXEC, ID: uuid.New().String(), Success: false, Error: "Failed to retrieve contract artifact: " + err.Error()},
+		}, err
+	}
+	var artifact swp.ArtifactMetadata
+	if err := json.Unmarshal(artifactBlob, &artifact); err != nil {
+		slog.Error("Failed to parse contract artifact", "artifact_hash", contract.ArtifactHash, "error", err)
+		return &ExecuteResult{
+			BlockHash: "",
+			Response:  &swp.WireResponse{Type: swp.EXEC, ID: uuid.New().String(), Success: false, Error: "Corrupt contract artifact: " + err.Error()},
 		}, err
 	}
 	traceLogs = append(traceLogs, swp.TraceLog{Step: "artifact.load", Msg: fmt.Sprintf("Artifact loaded: %s", contract.ArtifactHash), DurationMs: time.Since(stepStart).Milliseconds()})
@@ -205,7 +230,7 @@ func (s *contractService) ExecuteContract(ctx context.Context, contractID string
 		Type: swp.EXEC,
 		ID:   uuid.New().String(),
 		Data: swp.ExecPayload{
-			ContractArtifact: *artifact,
+			ContractArtifact: artifact,
 			ArtifactHash:     contract.ArtifactHash,
 			Function:         payload.Function,
 			Args:             payload.Args,
@@ -228,21 +253,7 @@ func (s *contractService) ExecuteContract(ctx context.Context, contractID string
 		return nil, err
 	}
 
-	// ── determina status ──────────────────────────────────────────────────────
-	blockStatus := "approved"
-	failedReason := ""
-
-	if !resp.Success {
-		blockStatus = "rejected"
-		failedReason = extractFailedReason(string(resp.Error))
-		auditLogs = append(auditLogs, swp.AuditLog{Time: time.Now().UTC().Format("15:04:05.000"), Event: fmt.Sprintf("Function failed: %s — %s", payload.Function, failedReason), Actor: "vvm"})
-		traceLogs = append(traceLogs, swp.TraceLog{Step: payload.Function, Msg: fmt.Sprintf("Function '%s' failed: %s", payload.Function, failedReason), DurationMs: execDuration})
-	} else {
-		auditLogs = append(auditLogs, swp.AuditLog{Time: time.Now().UTC().Format("15:04:05.000"), Event: fmt.Sprintf("Function executed: %s", payload.Function), Actor: "vvm"})
-		traceLogs = append(traceLogs, swp.TraceLog{Step: payload.Function, Msg: fmt.Sprintf("Function '%s' executed successfully", payload.Function), DurationMs: execDuration})
-	}
-
-	// ── journal ───────────────────────────────────────────────────────────────
+	// ── journal (parse antes do status para inspecionar events) ───────────────
 	var journalEvents []interface{}
 	var artifactHash string
 	if resp.Success {
@@ -252,6 +263,30 @@ func (s *contractService) ExecuteContract(ctx context.Context, contractID string
 		}
 		journalEvents = respData.Journal
 		artifactHash = respData.ArtifactHash
+	}
+
+	// ── determina status ──────────────────────────────────────────────────────
+	// VVM Success=true significa apenas que a função executou sem panic. Um
+	// contrato com try/catch que captura um require e emite "*Rejected" também
+	// volta como Success=true. Por isso, qualquer evento *Rejected no journal
+	// equivale a uma rejeição do contrato.
+	blockStatus := "approved"
+	failedReason := ""
+
+	if !resp.Success {
+		blockStatus = "rejected"
+		failedReason = extractFailedReason(resp.ErrorString())
+	} else if reason := rejectionFromEvents(journalEvents); reason != "" {
+		blockStatus = "rejected"
+		failedReason = reason
+	}
+
+	if blockStatus == "rejected" {
+		auditLogs = append(auditLogs, swp.AuditLog{Time: time.Now().UTC().Format("15:04:05.000"), Event: fmt.Sprintf("Function rejected: %s — %s", payload.Function, failedReason), Actor: "vvm"})
+		traceLogs = append(traceLogs, swp.TraceLog{Step: payload.Function, Msg: fmt.Sprintf("Function '%s' rejected: %s", payload.Function, failedReason), DurationMs: execDuration})
+	} else {
+		auditLogs = append(auditLogs, swp.AuditLog{Time: time.Now().UTC().Format("15:04:05.000"), Event: fmt.Sprintf("Function executed: %s", payload.Function), Actor: "vvm"})
+		traceLogs = append(traceLogs, swp.TraceLog{Step: payload.Function, Msg: fmt.Sprintf("Function '%s' executed successfully", payload.Function), DurationMs: execDuration})
 	}
 
 	enrichedJournal := EnrichedJournal{
@@ -301,7 +336,7 @@ func (s *contractService) ExecuteContract(ctx context.Context, contractID string
 		FailedReason: failedReason,
 	}
 
-	if resp.Success {
+	if blockStatus == "approved" {
 		if err := blocks.VerifyBlock(*previousBlock, *block, journalBytes, s.pubKey); err != nil {
 			return nil, err
 		}
@@ -317,6 +352,7 @@ func (s *contractService) ExecuteContract(ctx context.Context, contractID string
 	slog.Info("Execution block saved successfully", "block_hash", block.Hash)
 
 	// ── retorno ───────────────────────────────────────────────────────────────
+	// VVM crashou: sem events, sem journal.
 	if !resp.Success {
 		return &ExecuteResult{
 			BlockHash:    blockHash,
@@ -326,17 +362,15 @@ func (s *contractService) ExecuteContract(ctx context.Context, contractID string
 		}, nil
 	}
 
-	var respData swp.ExecResponse
-	if err := json.Unmarshal(resp.Data, &respData); err != nil {
-		return nil, err
-	}
-
-	slog.Info("Contract executed successfully", "contract_hash", respData.ArtifactHash, "function", respData.Function, "status", blockStatus)
-
+	// VVM executou: ainda assim podem ter sido emitidos eventos *Rejected.
+	// Propaga blockStatus para Response.Success para clientes que olham só o
+	// flag (a EEAPI continua enviando events na resposta HTTP em ambos os casos).
+	finalSuccess := blockStatus == "approved"
 	return &ExecuteResult{
-		BlockHash: blockHash,
-		Events:    respData.Journal,
-		Response:  &resp,
+		BlockHash:    blockHash,
+		Events:       journalEvents,
+		Response:     &swp.WireResponse{Type: swp.EXEC, ID: msg.ID, Success: finalSuccess, Data: resp.Data, Error: resp.Error},
+		FailedReason: failedReason,
 	}, nil
 }
 
@@ -374,4 +408,29 @@ func extractFailedReason(rawError string) string {
 	s = strings.TrimSuffix(s, "]")
 
 	return strings.TrimSpace(s)
+}
+
+// rejectionFromEvents inspects the journal for any "*Rejected" event emitted
+// by a contract's try/catch path and returns its reason (or the event Type as
+// fallback). Returns "" when no rejection event is present.
+func rejectionFromEvents(events []interface{}) string {
+	for _, ev := range events {
+		evMap, ok := ev.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		evType, _ := evMap["Type"].(string)
+		if !strings.HasSuffix(evType, "Rejected") {
+			continue
+		}
+		if payload, ok := evMap["Payload"].(map[string]interface{}); ok {
+			if data, ok := payload["data"].(map[string]interface{}); ok {
+				if reason, _ := data["reason"].(string); reason != "" {
+					return reason
+				}
+			}
+		}
+		return evType
+	}
+	return ""
 }

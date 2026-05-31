@@ -39,33 +39,14 @@ func ExecHandler(svc service.ContractService) http.HandlerFunc {
 			return
 		}
 
-		if !result.Response.Success {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(ExecApiResponse{
-				ExecutionHash: result.BlockHash,
-				Function:      req.Function,
-				Success:       false,
-				ContextId:     req.ContextId,
-				Events:        nil,
-				Reason:        result.FailedReason,
-			})
-			return
-		}
-
-		var coreResp swp.ExecResponse
-		if err := json.Unmarshal(result.Response.Data, &coreResp); err != nil {
-			http.Error(w, "Failed to parse response: "+err.Error(), http.StatusInternalServerError)
-			slog.Error("Failed to parse response", "error", err)
-			return
-		}
-
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(ExecApiResponse{
 			ExecutionHash: result.BlockHash,
-			Function:      coreResp.Function,
+			Function:      req.Function,
 			Success:       result.Response.Success,
 			ContextId:     req.ContextId,
 			Events:        result.Events,
+			Reason:        result.FailedReason,
 		})
 	}
 }

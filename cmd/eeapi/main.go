@@ -43,9 +43,15 @@ func main() {
 
 	slog.Info("-> Connected to database!")
 
+	artifactDir := os.Getenv("SYNX_ARTIFACT_DIR")
+	if artifactDir == "" {
+		artifactDir = "artifacts"
+	}
+
 	cfg := config.Config{
-		Addr: ":8080",
-		DB:   config.DBConfig{},
+		Addr:        ":8080",
+		DB:          config.DBConfig{},
+		ArtifactDir: artifactDir,
 	}
 
 	pub, priv, err := keys.LoadOrCreateKeys("keysStore/keys.pem")

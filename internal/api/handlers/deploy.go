@@ -7,7 +7,6 @@ import (
 	"net/http"
 
 	"github.com/peiblow/eeapi/internal/service"
-	"github.com/peiblow/eeapi/internal/swp"
 )
 
 type DeployApiResponse struct {
@@ -26,44 +25,45 @@ func DeployHandler(svc service.ContractService) http.HandlerFunc {
 			return
 		}
 
-		file, _, err := r.FormFile("source")
+		// The CLI uploads a prebuilt artifact (.snxb) — EEAPI no longer compiles.
+		file, _, err := r.FormFile("artifact")
 		if err != nil {
-			http.Error(w, "Missing source file: "+err.Error(), http.StatusBadRequest)
-			slog.Error("Missing source file", "error", err)
+			http.Error(w, "Missing artifact file: "+err.Error(), http.StatusBadRequest)
+			slog.Error("Missing artifact file", "error", err)
 			return
 		}
 		defer file.Close()
 
-		source, err := io.ReadAll(file)
+		artifact, err := io.ReadAll(file)
 		if err != nil {
-			http.Error(w, "Failed to read source file: "+err.Error(), http.StatusBadRequest)
-			slog.Error("Failed to read source file", "error", err)
+			http.Error(w, "Failed to read artifact file: "+err.Error(), http.StatusBadRequest)
+			slog.Error("Failed to read artifact file", "error", err)
 			return
 		}
 
-		req := swp.DeployPayload{
-			Hash:         r.FormValue("hash"),
+		in := &service.DeployInput{
 			ContractName: r.FormValue("contract_name"),
 			Version:      r.FormValue("version"),
 			Owner:        r.FormValue("owner"),
-			Source:       source,
+			Artifact:     artifact,
+			AgentHash:    r.FormValue("agent_hash"),
+			AgentName:    r.FormValue("agent_name"),
+			AgentVersion: r.FormValue("agent_version"),
 		}
 
-		contract, err := svc.DeployContract(r.Context(), &req)
+		result, err := svc.DeployContract(r.Context(), in)
 		if err != nil {
 			http.Error(w, "Failed to deploy contract: "+err.Error(), http.StatusInternalServerError)
 			slog.Error("Failed to deploy contract", "error", err)
 			return
 		}
 
-		var resp DeployApiResponse
-		if err := json.Unmarshal(contract.Data, &resp); err != nil {
-			http.Error(w, "Failed to parse response: "+err.Error(), http.StatusInternalServerError)
-			slog.Error("Failed to parse response", "error", err)
-			return
-		}
-
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		json.NewEncoder(w).Encode(DeployApiResponse{
+			ContractHash:    result.ContractHash,
+			ContractName:    result.ContractName,
+			ContractOwner:   result.ContractOwner,
+			ContractVersion: result.ContractVersion,
+		})
 	}
 }

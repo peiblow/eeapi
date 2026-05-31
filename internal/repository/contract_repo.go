@@ -2,7 +2,6 @@ package repository
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 
 	"github.com/peiblow/eeapi/internal/database/postgres"
@@ -13,10 +12,9 @@ import (
 
 type ContractRepository interface {
 	SaveContract(ctx context.Context, contract *contracts.Contract) error
-	SaveContractArtifact(ctx context.Context, artifactHash string, agentHash string, artifact *swp.ArtifactMetadata) error
+	SaveContractArtifact(ctx context.Context, artifactHash string, agentHash string) error
 	SaveAgentMeta(ctx context.Context, agent *swp.AgentMeta) error
 	GetContractByID(ctx context.Context, id string) (*contracts.Contract, error)
-	GetContractArtifactByHash(ctx context.Context, artifactHash string) (*swp.ArtifactMetadata, error)
 }
 
 type PsqlContractRepository struct {
@@ -37,33 +35,15 @@ func (r *PsqlContractRepository) SaveContract(ctx context.Context, contract *con
 	return err
 }
 
-func (r *PsqlContractRepository) SaveContractArtifact(ctx context.Context, artifactHash string, agentHash string, artifact *swp.ArtifactMetadata) error {
-	meta := struct {
-		ConstPool    []interface{}          `json:"const_pool"`
-		Functions    map[string]interface{} `json:"functions"`
-		FunctionName map[int]string         `json:"function_name"`
-		Types        map[string]interface{} `json:"types"`
-		InitStorage  map[int]interface{}    `json:"init_storage"`
-	}{
-		ConstPool:    artifact.ConstPool,
-		Functions:    artifact.Functions,
-		FunctionName: artifact.FunctionName,
-		Types:        artifact.Types,
-		InitStorage:  artifact.InitStorage,
-	}
+// SaveContractArtifact records the artifact in the registry. The bytecode and
+// metadata live in the content store (.snxb file), not the DB — this row only
+// links the artifact hash to its agent and creation time.
+func (r *PsqlContractRepository) SaveContractArtifact(ctx context.Context, artifactHash string, agentHash string) error {
+	query := `INSERT INTO contract_artifacts (_hash, created_at, agent_hash) VALUES ($1, $2, $3)`
 
-	metaJSON, err := json.Marshal(meta)
-	if err != nil {
-		return err
-	}
-
-	query := `INSERT INTO contract_artifacts (bytecode, metadata, _hash, created_at, agent_hash) VALUES ($1, $2, $3, $4, $5)`
-
-	_, err = r.db.ExecContext(
+	_, err := r.db.ExecContext(
 		ctx,
 		query,
-		artifact.Bytecode,
-		metaJSON,
 		artifactHash,
 		time.Now().UTC().UnixMilli(),
 		agentHash,
@@ -100,29 +80,6 @@ func (r *PsqlContractRepository) GetContractByID(ctx context.Context, artifactHa
 	}
 
 	return &contract, nil
-}
-
-func (r *PsqlContractRepository) GetContractArtifactByHash(ctx context.Context, artifactHash string) (*swp.ArtifactMetadata, error) {
-	query := `
-		SELECT bytecode, metadata
-		FROM contract_artifacts
-		WHERE _hash = $1
-	`
-	row := r.db.QueryRowContext(ctx, query, artifactHash)
-
-	var bytecode []byte
-	var metaJSON []byte
-	if err := row.Scan(&bytecode, &metaJSON); err != nil {
-		return nil, err
-	}
-
-	var meta swp.ArtifactMetadata
-	if err := json.Unmarshal(metaJSON, &meta); err != nil {
-		return nil, err
-	}
-	meta.Bytecode = bytecode
-
-	return &meta, nil
 }
 
 func (r *PsqlContractRepository) GetBlocksByContextID(ctx context.Context, contextID string) ([]*schema.Block, error) {

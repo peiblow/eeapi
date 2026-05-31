@@ -91,7 +91,35 @@ type WireResponse struct {
 	ID      string          `json:"id"`
 	Success bool            `json:"success"`
 	Data    json.RawMessage `json:"data,omitempty"`
-	Error   string          `json:"error,omitempty"`
+	Error   interface{}     `json:"error,omitempty"`
+}
+
+// ErrorString returns a flat string representation of Error, which may arrive
+// from the VVM as a plain string or as a structured object like
+// {"code": "...", "message": "..."}.
+func (r *WireResponse) ErrorString() string {
+	switch v := r.Error.(type) {
+	case nil:
+		return ""
+	case string:
+		return v
+	case map[string]interface{}:
+		code, _ := v["code"].(string)
+		msg, _ := v["message"].(string)
+		switch {
+		case code != "" && msg != "":
+			return code + ": " + msg
+		case msg != "":
+			return msg
+		case code != "":
+			return code
+		}
+		b, _ := json.Marshal(v)
+		return string(b)
+	default:
+		b, _ := json.Marshal(v)
+		return string(b)
+	}
 }
 
 type SwpClient struct {
