@@ -29,24 +29,26 @@ type ContractService interface {
 }
 
 type contractService struct {
-	swpClient   *swp.SwpClient
-	db          repository.ContractRepository
-	blockDB     repository.BlockRepository
-	privKey     []byte
-	pubKey      []byte
-	locker      *config.ContractLocker
-	artifactDir string
+	swpClient    *swp.SwpClient
+	db           repository.ContractRepository
+	blockDB      repository.BlockRepository
+	behaviourSrv BehaviourService
+	privKey      []byte
+	pubKey       []byte
+	locker       *config.ContractLocker
+	artifactDir  string
 }
 
-func NewContractService(swpClient *swp.SwpClient, db *postgres.DB, privKey []byte, pubKey []byte, locker *config.ContractLocker, artifactDir string) ContractService {
+func NewContractService(swpClient *swp.SwpClient, db *postgres.DB, behaviourSrv BehaviourService, privKey []byte, pubKey []byte, locker *config.ContractLocker, artifactDir string) ContractService {
 	return &contractService{
-		swpClient:   swpClient,
-		db:          repository.NewPsqlContractRepository(db),
-		blockDB:     repository.NewPsqlBlockRepository(db),
-		privKey:     privKey,
-		pubKey:      pubKey,
-		locker:      locker,
-		artifactDir: artifactDir,
+		swpClient:    swpClient,
+		db:           repository.NewPsqlContractRepository(db),
+		blockDB:      repository.NewPsqlBlockRepository(db),
+		behaviourSrv: behaviourSrv,
+		privKey:      privKey,
+		pubKey:       pubKey,
+		locker:       locker,
+		artifactDir:  artifactDir,
 	}
 }
 
@@ -186,8 +188,6 @@ func (s *contractService) ExecuteContract(ctx context.Context, contractID string
 	auditLogs = append(auditLogs, swp.AuditLog{Time: time.Now().UTC().Format("15:04:05.000"), Event: fmt.Sprintf("Contract loaded: %s", contract.ArtifactHash), Actor: "system"})
 
 	// ── artifact.load ─────────────────────────────────────────────────────────
-	// The artifact is the source of truth in the content store; read the .snxb
-	// file by hash and unmarshal it.
 	stepStart = time.Now()
 	artifactBlob, err := store.GetArtifact(s.artifactDir, contract.ArtifactHash)
 	if err != nil {
@@ -207,6 +207,51 @@ func (s *contractService) ExecuteContract(ctx context.Context, contractID string
 	}
 	traceLogs = append(traceLogs, swp.TraceLog{Step: "artifact.load", Msg: fmt.Sprintf("Artifact loaded: %s", contract.ArtifactHash), DurationMs: time.Since(stepStart).Milliseconds()})
 
+	argsBytes, _ := json.Marshal(payload.Args)
+	sum := sha256.Sum256(argsBytes)
+	payloadHash := hex.EncodeToString(sum[:])
+
+	// if score, err := s.behaviourSrv.ProcessEvent(ctx, schema.BehaviourEvent{
+	// 	ContractId:  contractID,
+	// 	AgentId:     payload.CallerID,
+	// 	TotalTools:  len(artifact.Functions),
+	// 	Tool:        payload.Function,
+	// 	PayloadHash: payloadHash,
+	// 	Denied:      false,
+	// 	Timestamp:   timestamp,
+	// }); err != nil {
+	// 	slog.Error("behaviour gate failed, allowing execution", "contract_id", contractID, "error", err)
+	// } else if score != nil && score.Score != nil {
+	// 	auditLogs = append(auditLogs, swp.AuditLog{Time: time.Now().UTC().Format("15:04:05.000"), Event: fmt.Sprintf("Behaviour score calculated: %.4f (%s)", score.Score.RiskScore, score.Score.RiskLevel), Actor: "behaviour_service"})
+
+	// 	payload.Args["risk_score"] = score.Score.RiskScore
+	// 	payload.Args["risk_level"] = score.Score.RiskLevel
+
+	// 	// if score.Score.RiskLevel == "CRITICAL" {
+	// 	// 	auditLogs = append(auditLogs, swp.AuditLog{Time: time.Now().UTC().Format("15:04:05.000"), Event: "Execution denied due to high risk score", Actor: "behaviour_service"})
+	// 	// 	return &ExecuteResult{
+	// 	// 		BlockHash:    "",
+	// 	// 		Events:       nil,
+	// 	// 		Response:     &swp.WireResponse{Type: swp.EXEC, ID: uuid.New().String(), Success: false, Error: "Execution denied due to high risk score"},
+	// 	// 		FailedReason: "high risk score",
+	// 	// 	}, nil
+	// 	// }
+	// }
+
+	decision, err := s.behaviourSrv.ProcessEvent(ctx, schema.BehaviourEvent{
+		ContractId:  contractID,
+		AgentId:     payload.CallerID,
+		TotalTools:  len(artifact.Functions),
+		Tool:        payload.Function,
+		PayloadHash: payloadHash,
+		Denied:      false,
+		Timestamp:   timestamp,
+	})
+
+	if err != nil {
+		slog.Error("behaviour gate failed, allowing execution", "contract_id", contractID, "error", err)
+	}
+
 	// ── VVM execute ───────────────────────────────────────────────────────────
 	if payload.ContextId != "" {
 		finalBlock, err := s.blockDB.GetFinalBlockByContextID(ctx, payload.ContextId)
@@ -221,7 +266,7 @@ func (s *contractService) ExecuteContract(ctx context.Context, contractID string
 				return &ExecuteResult{
 					BlockHash: "",
 					Response:  &swp.WireResponse{Type: swp.EXEC, ID: uuid.New().String(), Success: false, Error: reason},
-				}, fmt.Errorf(reason)
+				}, fmt.Errorf("%s", reason)
 			}
 		}
 	}
@@ -234,6 +279,11 @@ func (s *contractService) ExecuteContract(ctx context.Context, contractID string
 			ArtifactHash:     contract.ArtifactHash,
 			Function:         payload.Function,
 			Args:             payload.Args,
+			CoreArgs: map[string]any{
+				"riskScore":  decision.Score.RiskScore,
+				"riskLevel":  decision.Score.RiskLevel,
+				"denialRate": decision.Score.DenialRate,
+			},
 		},
 	}
 
@@ -284,6 +334,13 @@ func (s *contractService) ExecuteContract(ctx context.Context, contractID string
 	if blockStatus == "rejected" {
 		auditLogs = append(auditLogs, swp.AuditLog{Time: time.Now().UTC().Format("15:04:05.000"), Event: fmt.Sprintf("Function rejected: %s — %s", payload.Function, failedReason), Actor: "vvm"})
 		traceLogs = append(traceLogs, swp.TraceLog{Step: payload.Function, Msg: fmt.Sprintf("Function '%s' rejected: %s", payload.Function, failedReason), DurationMs: execDuration})
+
+		if decision != nil && decision.EventId != 0 {
+			eventId := decision.EventId
+			if err := s.behaviourSrv.MarkEventAsDenied(ctx, eventId); err != nil {
+				slog.Error("Error to MARK EVENT as DENIED", "EventID", eventId)
+			}
+		}
 	} else {
 		auditLogs = append(auditLogs, swp.AuditLog{Time: time.Now().UTC().Format("15:04:05.000"), Event: fmt.Sprintf("Function executed: %s", payload.Function), Actor: "vvm"})
 		traceLogs = append(traceLogs, swp.TraceLog{Step: payload.Function, Msg: fmt.Sprintf("Function '%s' executed successfully", payload.Function), DurationMs: execDuration})

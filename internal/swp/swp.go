@@ -61,6 +61,7 @@ type ExecPayload struct {
 	Args             map[string]any   `json:"args"`
 	ContextId        string           `json:"context_id,omitempty"`
 	CallerID         string           `json:"caller_id"`
+	CoreArgs         map[string]any
 }
 
 type TraceLog struct {
