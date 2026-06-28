@@ -112,6 +112,17 @@ type EnrichedJournal struct {
 	Audit  []swp.AuditLog         `json:"audit"`
 }
 
+func normalizeToolFunctions(tools []swp.ToolStmt) {
+	for i := range tools {
+		for j := range tools[i].Steps {
+			fn := tools[i].Steps[j].Function
+			if k := strings.LastIndex(fn, "."); k >= 0 {
+				tools[i].Steps[j].Function = fn[k+1:]
+			}
+		}
+	}
+}
+
 func (s *contractService) DeployContract(ctx context.Context, in *DeployInput) (*DeployResult, error) {
 	createdAt := time.Now().UTC()
 	hashInput := fmt.Sprintf("%v:%v:%v:%v", in.Owner, in.ContractName, in.Version, createdAt.UnixMilli())
@@ -122,6 +133,8 @@ func (s *contractService) DeployContract(ctx context.Context, in *DeployInput) (
 	if err := json.Unmarshal(in.Artifact, &probe); err != nil {
 		return nil, fmt.Errorf("invalid artifact: %w", err)
 	}
+
+	normalizeToolFunctions(probe.AgentInfo.Tools)
 
 	if err := store.PutArtifact(s.artifactDir, hash, in.Artifact); err != nil {
 		return nil, err

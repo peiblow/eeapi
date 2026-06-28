@@ -34,9 +34,15 @@ type ToolAction struct {
 	Url    string `json:"url"`
 }
 
+type ToolStepInput struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
 type ToolStep struct {
-	Function string      `json:"function"`
-	Action   *ToolAction `json:"action,omitempty"`
+	Function string          `json:"function"`
+	Input    []ToolStepInput `json:"input,omitempty"`
+	Action   *ToolAction     `json:"action,omitempty"`
 }
 
 type ToolStmt struct {
