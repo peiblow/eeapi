@@ -7,13 +7,11 @@ import (
 	"github.com/peiblow/eeapi/internal/database/postgres"
 	"github.com/peiblow/eeapi/internal/schema"
 	contracts "github.com/peiblow/eeapi/internal/schema"
-	"github.com/peiblow/eeapi/internal/swp"
 )
 
 type ContractRepository interface {
 	SaveContract(ctx context.Context, contract *contracts.Contract) error
 	SaveContractArtifact(ctx context.Context, artifactHash string, agentHash string) error
-	SaveAgentMeta(ctx context.Context, agent *swp.AgentMeta) error
 	GetContractByID(ctx context.Context, id string) (*contracts.Contract, error)
 }
 
@@ -35,9 +33,6 @@ func (r *PsqlContractRepository) SaveContract(ctx context.Context, contract *con
 	return err
 }
 
-// SaveContractArtifact records the artifact in the registry. The bytecode and
-// metadata live in the content store (.snxb file), not the DB — this row only
-// links the artifact hash to its agent and creation time.
 func (r *PsqlContractRepository) SaveContractArtifact(ctx context.Context, artifactHash string, agentHash string) error {
 	query := `INSERT INTO contract_artifacts (_hash, created_at, agent_hash) VALUES ($1, $2, $3)`
 
@@ -47,20 +42,6 @@ func (r *PsqlContractRepository) SaveContractArtifact(ctx context.Context, artif
 		artifactHash,
 		time.Now().UTC().UnixMilli(),
 		agentHash,
-	)
-
-	return err
-}
-
-func (s *PsqlContractRepository) SaveAgentMeta(ctx context.Context, agent *swp.AgentMeta) error {
-	query := `INSERT INTO contract_agents (_hash, name, version) VALUES ($1, $2, $3)`
-
-	_, err := s.db.ExecContext(
-		ctx,
-		query,
-		agent.Hash,
-		agent.Name,
-		agent.Version,
 	)
 
 	return err

@@ -35,10 +35,13 @@ func (s *Server) mount() http.Handler {
 		r.Use(auth.JWTMiddleware(s.clientPub))
 
 		behaviourSvc := service.NewBehaviourService(s.db)
-		contractSvc := service.NewContractService(s.svm, s.db, behaviourSvc, s.priv, s.pub, s.locker, s.cfg.ArtifactDir)
+		eventSvc := service.NewEventService(s.rdb, s.db)
+		contractSvc := service.NewContractService(s.svm, s.rdb, s.db, behaviourSvc, s.priv, s.pub, s.locker, s.cfg.ArtifactDir)
 		r.Post("/contracts/deploy", handlers.DeployHandler(contractSvc))
 		r.Post("/contracts/{id}/execute", handlers.ExecHandler(contractSvc))
 		r.Get("/trace/{contextId}", handlers.TraceHandler(contractSvc))
+		r.Get("/agent/{agentHash}/tools", handlers.GetAgentToolsHandler(contractSvc))
+		r.Post("/agent/{agentHash}/events", handlers.EnqueueEventHandler(eventSvc))
 	})
 
 	return r

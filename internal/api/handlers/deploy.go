@@ -14,6 +14,7 @@ type DeployApiResponse struct {
 	ContractName    string `json:"contract_name"`
 	ContractOwner   string `json:"contract_owner"`
 	ContractVersion string `json:"contract_version"`
+	AgentHash       string `json:"agent_hash"`
 }
 
 func DeployHandler(svc service.ContractService) http.HandlerFunc {
@@ -64,6 +65,7 @@ func DeployHandler(svc service.ContractService) http.HandlerFunc {
 			ContractName:    result.ContractName,
 			ContractOwner:   result.ContractOwner,
 			ContractVersion: result.ContractVersion,
+			AgentHash:       result.AgentHash,
 		})
 	}
 }

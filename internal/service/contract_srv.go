@@ -15,6 +15,7 @@ import (
 	"github.com/peiblow/eeapi/internal/blocks"
 	"github.com/peiblow/eeapi/internal/config"
 	"github.com/peiblow/eeapi/internal/database/postgres"
+	"github.com/peiblow/eeapi/internal/database/redis"
 	"github.com/peiblow/eeapi/internal/keys"
 	"github.com/peiblow/eeapi/internal/repository"
 	"github.com/peiblow/eeapi/internal/schema"
@@ -25,12 +26,15 @@ import (
 type ContractService interface {
 	DeployContract(ctx context.Context, in *DeployInput) (*DeployResult, error)
 	ExecuteContract(ctx context.Context, contractID string, payload *swp.ExecPayload) (*ExecuteResult, error)
+	GetAgentTools(ctx context.Context, agentHash string) ([]swp.ToolStmt, error)
 	TraceContext(ctx context.Context, contextID string) (*TraceOutput, error)
 }
 
 type contractService struct {
 	swpClient    *swp.SwpClient
+	rdb          *redis.Client
 	db           repository.ContractRepository
+	agentDB      repository.AgentRepository
 	blockDB      repository.BlockRepository
 	behaviourSrv BehaviourService
 	privKey      []byte
@@ -39,21 +43,21 @@ type contractService struct {
 	artifactDir  string
 }
 
-func NewContractService(swpClient *swp.SwpClient, db *postgres.DB, behaviourSrv BehaviourService, privKey []byte, pubKey []byte, locker *config.ContractLocker, artifactDir string) ContractService {
+func NewContractService(swpClient *swp.SwpClient, rdb *redis.Client, db *postgres.DB, behaviourSrv BehaviourService, privKey []byte, pubKey []byte, locker *config.ContractLocker, artifactDir string) ContractService {
 	return &contractService{
 		swpClient:    swpClient,
 		db:           repository.NewPsqlContractRepository(db),
+		agentDB:      repository.NewPsqlAgentRepository(db),
 		blockDB:      repository.NewPsqlBlockRepository(db),
 		behaviourSrv: behaviourSrv,
 		privKey:      privKey,
 		pubKey:       pubKey,
 		locker:       locker,
 		artifactDir:  artifactDir,
+		rdb:          rdb,
 	}
 }
 
-// DeployInput is a prebuilt contract submitted to /deploy. The artifact is
-// compiled by the synx CLI; EEAPI no longer compiles.
 type DeployInput struct {
 	ContractName string
 	Version      string
@@ -69,6 +73,7 @@ type DeployResult struct {
 	ContractName    string
 	ContractOwner   string
 	ContractVersion string
+	AgentHash       string
 }
 
 type ArtifactMetadata struct {
@@ -113,29 +118,46 @@ func (s *contractService) DeployContract(ctx context.Context, in *DeployInput) (
 	hashBytes := sha256.Sum256([]byte(hashInput))
 	hash := "0x" + hex.EncodeToString(hashBytes[:])
 
-	// The artifact is already compiled by the CLI — validate it parses before
-	// we store it; the bytes themselves go to the content store, not the DB.
 	var probe swp.ArtifactMetadata
 	if err := json.Unmarshal(in.Artifact, &probe); err != nil {
 		return nil, fmt.Errorf("invalid artifact: %w", err)
 	}
 
-	// 1) Write the artifact to the shared content store first (file before DB
-	//    row, so we never have a contract row pointing at a missing artifact).
 	if err := store.PutArtifact(s.artifactDir, hash, in.Artifact); err != nil {
 		return nil, err
 	}
 	slog.Info("Artifact stored", "hash", hash, "dir", s.artifactDir)
 
-	// 2) Persist metadata. The artifact blob is still written to Postgres
-	//    because ExecuteContract currently loads it from there; once exec reads
-	//    the .snxb file, the contract_artifacts blob can be dropped.
-	if err := s.db.SaveAgentMeta(ctx, &swp.AgentMeta{
-		Hash:    in.AgentHash,
-		Name:    in.AgentName,
-		Version: in.AgentVersion,
-	}); err != nil {
-		return nil, err
+	if err := s.agentDB.SaveAgent(ctx, in.AgentHash, in.AgentName, in.AgentVersion, probe.AgentInfo); err != nil {
+		return nil, fmt.Errorf("failed to save agent: %w", err)
+	}
+
+	if err := s.agentDB.SaveAgentTools(ctx, in.AgentHash, probe.AgentInfo.Tools); err != nil {
+		return nil, fmt.Errorf("failed to save agent tools: %w", err)
+	}
+
+	if err := s.agentDB.SaveAgentSkills(ctx, in.AgentHash, probe.AgentInfo.Skills); err != nil {
+		return nil, fmt.Errorf("failed to save agent skills: %w", err)
+	}
+
+	agentDef := schema.AgentDefinition{
+		Hash:         in.AgentHash,
+		Name:         in.AgentName,
+		Version:      in.AgentVersion,
+		SystemPrompt: probe.AgentInfo.Behavior.SystemPrompt,
+		Purpose:      probe.AgentInfo.Purpose,
+		Model:        probe.AgentInfo.Model,
+		Behavior:     probe.AgentInfo.Behavior,
+		Tools:        probe.AgentInfo.Tools,
+		Skills:       probe.AgentInfo.Skills,
+	}
+	agentDefBytes, err := json.Marshal(agentDef)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal agent definition: %w", err)
+	}
+
+	if err := s.rdb.Set(ctx, "synx:agent:"+in.AgentHash, agentDefBytes, 0); err != nil {
+		return nil, fmt.Errorf("failed to cache agent definition: %w", err)
 	}
 
 	if err := s.db.SaveContractArtifact(ctx, hash, in.AgentHash); err != nil {
@@ -157,6 +179,7 @@ func (s *contractService) DeployContract(ctx context.Context, in *DeployInput) (
 		ContractName:    in.ContractName,
 		ContractOwner:   in.Owner,
 		ContractVersion: in.Version,
+		AgentHash:       in.AgentHash,
 	}, nil
 }
 
@@ -211,33 +234,6 @@ func (s *contractService) ExecuteContract(ctx context.Context, contractID string
 	sum := sha256.Sum256(argsBytes)
 	payloadHash := hex.EncodeToString(sum[:])
 
-	// if score, err := s.behaviourSrv.ProcessEvent(ctx, schema.BehaviourEvent{
-	// 	ContractId:  contractID,
-	// 	AgentId:     payload.CallerID,
-	// 	TotalTools:  len(artifact.Functions),
-	// 	Tool:        payload.Function,
-	// 	PayloadHash: payloadHash,
-	// 	Denied:      false,
-	// 	Timestamp:   timestamp,
-	// }); err != nil {
-	// 	slog.Error("behaviour gate failed, allowing execution", "contract_id", contractID, "error", err)
-	// } else if score != nil && score.Score != nil {
-	// 	auditLogs = append(auditLogs, swp.AuditLog{Time: time.Now().UTC().Format("15:04:05.000"), Event: fmt.Sprintf("Behaviour score calculated: %.4f (%s)", score.Score.RiskScore, score.Score.RiskLevel), Actor: "behaviour_service"})
-
-	// 	payload.Args["risk_score"] = score.Score.RiskScore
-	// 	payload.Args["risk_level"] = score.Score.RiskLevel
-
-	// 	// if score.Score.RiskLevel == "CRITICAL" {
-	// 	// 	auditLogs = append(auditLogs, swp.AuditLog{Time: time.Now().UTC().Format("15:04:05.000"), Event: "Execution denied due to high risk score", Actor: "behaviour_service"})
-	// 	// 	return &ExecuteResult{
-	// 	// 		BlockHash:    "",
-	// 	// 		Events:       nil,
-	// 	// 		Response:     &swp.WireResponse{Type: swp.EXEC, ID: uuid.New().String(), Success: false, Error: "Execution denied due to high risk score"},
-	// 	// 		FailedReason: "high risk score",
-	// 	// 	}, nil
-	// 	// }
-	// }
-
 	decision, err := s.behaviourSrv.ProcessEvent(ctx, schema.BehaviourEvent{
 		ContractId:  contractID,
 		AgentId:     payload.CallerID,
@@ -271,6 +267,15 @@ func (s *contractService) ExecuteContract(ctx context.Context, contractID string
 		}
 	}
 
+	coreArgs := map[string]any{}
+	if decision != nil && decision.Score != nil {
+		coreArgs["riskScore"] = decision.Score.RiskScore
+		coreArgs["riskLevel"] = decision.Score.RiskLevel
+		coreArgs["denialRate"] = decision.Score.DenialRate
+	} else {
+		slog.Warn("No decision score available for contract execution", "contract_id", contractID, "function", payload.Function)
+	}
+
 	msg := swp.WireMesage{
 		Type: swp.EXEC,
 		ID:   uuid.New().String(),
@@ -279,11 +284,7 @@ func (s *contractService) ExecuteContract(ctx context.Context, contractID string
 			ArtifactHash:     contract.ArtifactHash,
 			Function:         payload.Function,
 			Args:             payload.Args,
-			CoreArgs: map[string]any{
-				"riskScore":  decision.Score.RiskScore,
-				"riskLevel":  decision.Score.RiskLevel,
-				"denialRate": decision.Score.DenialRate,
-			},
+			CoreArgs:         coreArgs,
 		},
 	}
 
@@ -455,6 +456,10 @@ func (s *contractService) TraceContext(ctx context.Context, contextID string) (*
 	}, nil
 }
 
+func (s *contractService) GetAgentTools(ctx context.Context, agentHash string) ([]swp.ToolStmt, error) {
+	return s.agentDB.GetAgentTools(ctx, agentHash)
+}
+
 func extractFailedReason(rawError string) string {
 	s := rawError
 	if idx := strings.Index(s, "[execution error: "); idx != -1 {
@@ -467,9 +472,6 @@ func extractFailedReason(rawError string) string {
 	return strings.TrimSpace(s)
 }
 
-// rejectionFromEvents inspects the journal for any "*Rejected" event emitted
-// by a contract's try/catch path and returns its reason (or the event Type as
-// fallback). Returns "" when no rejection event is present.
 func rejectionFromEvents(events []interface{}) string {
 	for _, ev := range events {
 		evMap, ok := ev.(map[string]interface{})

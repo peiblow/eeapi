@@ -29,6 +29,52 @@ type DeployPayload struct {
 	Source       []byte `json:"source"`
 }
 
+type ToolAction struct {
+	Method string `json:"method"`
+	Url    string `json:"url"`
+}
+
+type ToolStep struct {
+	Function string      `json:"function"`
+	Action   *ToolAction `json:"action,omitempty"`
+}
+
+type ToolStmt struct {
+	Name        string     `json:"name"`
+	Description string     `json:"description"`
+	Steps       []ToolStep `json:"steps"`
+}
+
+type ModelStmt struct {
+	Provider    string  `json:"provider"`
+	Name        string  `json:"name"`
+	Temperature float64 `json:"temperature"`
+	MaxTokens   int     `json:"max_tokens"`
+}
+
+type BehaviorStmt struct {
+	SystemPrompt string `json:"system_prompt"`
+	MaxSteps     int    `json:"max_steps"`
+	OnDeny       string `json:"on_deny"`
+	OnError      string `json:"on_error"`
+}
+
+type SkillStmt struct {
+	Name    string   `json:"name"`
+	Content string   `json:"content"`
+	Uses    []string `json:"uses"`
+}
+
+type AgentInfo struct {
+	Hash     string `json:"hash"`
+	Name     string `json:"name"`
+	Purpose  string `json:"purpose"`
+	Tools    []ToolStmt
+	Model    ModelStmt
+	Behavior BehaviorStmt
+	Skills   []SkillStmt `json:"skills"`
+}
+
 type ArtifactMetadata struct {
 	Bytecode     []byte                 `json:"bytecode"`
 	ConstPool    []interface{}          `json:"const_pool"`
@@ -36,6 +82,7 @@ type ArtifactMetadata struct {
 	FunctionName map[int]string         `json:"function_name"`
 	Types        map[string]interface{} `json:"types"`
 	InitStorage  map[int]interface{}    `json:"init_storage"`
+	AgentInfo    AgentInfo              `json:"agent_info"`
 }
 
 type AgentMeta struct {

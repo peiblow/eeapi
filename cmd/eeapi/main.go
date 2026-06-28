@@ -9,6 +9,7 @@ import (
 	"github.com/peiblow/eeapi/internal/api"
 	"github.com/peiblow/eeapi/internal/config"
 	"github.com/peiblow/eeapi/internal/database/postgres"
+	"github.com/peiblow/eeapi/internal/database/redis"
 	"github.com/peiblow/eeapi/internal/keys"
 	"github.com/peiblow/eeapi/internal/swp"
 )
@@ -43,6 +44,15 @@ func main() {
 
 	slog.Info("-> Connected to database!")
 
+	rdb, err := redis.Open()
+	if err != nil {
+		slog.Error("Failed to connect to redis", "error", err)
+		os.Exit(1)
+	}
+	defer rdb.Close()
+
+	slog.Info("-> Connected to redis!")
+
 	artifactDir := os.Getenv("SYNX_ARTIFACT_DIR")
 	if artifactDir == "" {
 		artifactDir = "artifacts"
@@ -69,7 +79,7 @@ func main() {
 	pubKeyBytes, _ := hex.DecodeString(pubKeyHex)
 	clientPubKey := ed25519.PublicKey(pubKeyBytes[len(pubKeyBytes)-32:])
 
-	server := api.NewServer(cfg, svm, db, pub, priv, clientPubKey, locker)
+	server := api.NewServer(cfg, svm, db, rdb, pub, priv, clientPubKey, locker)
 
 	if err := server.Run(); err != nil {
 		slog.Error("Server failed to start", "error", err)

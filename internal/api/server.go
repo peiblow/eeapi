@@ -8,6 +8,7 @@ import (
 
 	"github.com/peiblow/eeapi/internal/config"
 	"github.com/peiblow/eeapi/internal/database/postgres"
+	"github.com/peiblow/eeapi/internal/database/redis"
 	"github.com/peiblow/eeapi/internal/swp"
 )
 
@@ -15,6 +16,7 @@ type Server struct {
 	cfg       config.Config
 	svm       *swp.SwpClient
 	db        *postgres.DB
+	rdb       *redis.Client
 	pub       ed25519.PublicKey
 	priv      ed25519.PrivateKey
 	clientPub ed25519.PublicKey
@@ -22,11 +24,12 @@ type Server struct {
 	locker *config.ContractLocker
 }
 
-func NewServer(cfg config.Config, svm *swp.SwpClient, db *postgres.DB, pub []byte, priv []byte, clientPub []byte, locker *config.ContractLocker) *Server {
+func NewServer(cfg config.Config, svm *swp.SwpClient, db *postgres.DB, rdb *redis.Client, pub []byte, priv []byte, clientPub []byte, locker *config.ContractLocker) *Server {
 	return &Server{
 		cfg,
 		svm,
 		db,
+		rdb,
 		pub,
 		priv,
 		clientPub,
