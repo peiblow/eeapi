@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -27,6 +29,7 @@ type ContractService interface {
 	DeployContract(ctx context.Context, in *DeployInput) (*DeployResult, error)
 	ExecuteContract(ctx context.Context, contractID string, payload *swp.ExecPayload) (*ExecuteResult, error)
 	GetAgentTools(ctx context.Context, agentHash string) ([]swp.ToolStmt, error)
+	GetAgentDefinition(ctx context.Context, agentHash string) (*schema.AgentDefinition, error)
 	TraceContext(ctx context.Context, contextID string) (*TraceOutput, error)
 }
 
@@ -163,6 +166,7 @@ func (s *contractService) DeployContract(ctx context.Context, in *DeployInput) (
 		Behavior:     probe.AgentInfo.Behavior,
 		Tools:        probe.AgentInfo.Tools,
 		Skills:       probe.AgentInfo.Skills,
+		Triggers:     probe.AgentInfo.Triggers,
 	}
 	agentDefBytes, err := json.Marshal(agentDef)
 	if err != nil {
@@ -471,6 +475,49 @@ func (s *contractService) TraceContext(ctx context.Context, contextID string) (*
 
 func (s *contractService) GetAgentTools(ctx context.Context, agentHash string) ([]swp.ToolStmt, error) {
 	return s.agentDB.GetAgentTools(ctx, agentHash)
+}
+
+func (s *contractService) GetAgentDefinition(ctx context.Context, agentHash string) (*schema.AgentDefinition, error) {
+	rec, err := s.agentDB.GetAgent(ctx, agentHash)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrAgentNotFound
+		}
+		return nil, err
+	}
+
+	tools, err := s.agentDB.GetAgentTools(ctx, agentHash)
+	if err != nil {
+		return nil, err
+	}
+
+	skills, err := s.agentDB.GetAgentSkills(ctx, agentHash)
+	if err != nil {
+		return nil, err
+	}
+
+	agentDef := schema.AgentDefinition{
+		Hash:         rec.Hash,
+		Name:         rec.Name,
+		Version:      rec.Version,
+		Purpose:      rec.Purpose,
+		SystemPrompt: rec.SystemPrompt,
+		Model:        rec.Model,
+		Behavior:     rec.Behavior,
+		Tools:        tools,
+		Skills:       skills,
+	}
+
+	agentDefBytes, err := json.Marshal(agentDef)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal agent definition: %w", err)
+	}
+
+	if err := s.rdb.Set(ctx, "synx:agent:"+agentHash, agentDefBytes, 0); err != nil {
+		slog.Error("failed to re-cache agent definition", "agent_hash", agentHash, "error", err)
+	}
+
+	return &agentDef, nil
 }
 
 func extractFailedReason(rawError string) string {

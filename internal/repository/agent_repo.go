@@ -13,8 +13,20 @@ type AgentRepository interface {
 	SaveAgent(ctx context.Context, hash, name, version string, info swp.AgentInfo) error
 	SaveAgentTools(ctx context.Context, agentHash string, tools []swp.ToolStmt) error
 	SaveAgentSkills(ctx context.Context, agentHash string, skills []swp.SkillStmt) error
+	GetAgent(ctx context.Context, agentHash string) (*AgentRecord, error)
 	GetAgentTools(ctx context.Context, agentHash string) ([]swp.ToolStmt, error)
+	GetAgentSkills(ctx context.Context, agentHash string) ([]swp.SkillStmt, error)
 	AgentExists(ctx context.Context, agentHash string) (bool, error)
+}
+
+type AgentRecord struct {
+	Hash         string
+	Name         string
+	Version      string
+	Purpose      string
+	SystemPrompt string
+	Model        swp.ModelStmt
+	Behavior     swp.BehaviorStmt
 }
 
 type PsqlAgentRepository struct {
@@ -91,6 +103,55 @@ func (r *PsqlAgentRepository) SaveAgentSkills(ctx context.Context, agentHash str
 	}
 
 	return nil
+}
+
+func (r *PsqlAgentRepository) GetAgent(ctx context.Context, agentHash string) (*AgentRecord, error) {
+	query := `SELECT _hash, name, version, purpose, system_prompt, model, behavior FROM contract_agents WHERE _hash = $1`
+
+	var rec AgentRecord
+	var modelJSON, behaviorJSON []byte
+	if err := r.db.QueryRowContext(ctx, query, agentHash).Scan(
+		&rec.Hash, &rec.Name, &rec.Version, &rec.Purpose, &rec.SystemPrompt, &modelJSON, &behaviorJSON,
+	); err != nil {
+		return nil, err
+	}
+
+	if err := json.Unmarshal(modelJSON, &rec.Model); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal agent model: %w", err)
+	}
+	if err := json.Unmarshal(behaviorJSON, &rec.Behavior); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal agent behavior: %w", err)
+	}
+	rec.Behavior.SystemPrompt = rec.SystemPrompt
+
+	return &rec, nil
+}
+
+func (r *PsqlAgentRepository) GetAgentSkills(ctx context.Context, agentHash string) ([]swp.SkillStmt, error) {
+	query := `SELECT name, content, uses FROM agent_skills WHERE agent_hash = $1`
+	rows, err := r.db.QueryContext(ctx, query, agentHash)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query agent skills: %w", err)
+	}
+	defer rows.Close()
+
+	var skills []swp.SkillStmt
+	for rows.Next() {
+		var skill swp.SkillStmt
+		var usesJson []byte
+
+		if err := rows.Scan(&skill.Name, &skill.Content, &usesJson); err != nil {
+			return nil, fmt.Errorf("failed to scan skill row: %w", err)
+		}
+
+		if err := json.Unmarshal(usesJson, &skill.Uses); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal skill uses: %w", err)
+		}
+
+		skills = append(skills, skill)
+	}
+
+	return skills, nil
 }
 
 func (r *PsqlAgentRepository) GetAgentTools(ctx context.Context, agentHash string) ([]swp.ToolStmt, error) {

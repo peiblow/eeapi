@@ -12,6 +12,7 @@ type AgentDefinition struct {
 	SystemPrompt string           `json:"system_prompt"` // contract_agents.system_prompt (.md embarcado)
 	Model        swp.ModelStmt    `json:"model"`         // contract_agents.model (JSONB)
 	Behavior     swp.BehaviorStmt `json:"behavior"`      // contract_agents.behavior (JSONB)
-	Tools        []swp.ToolStmt   `json:"tools"`         // agent_tools
-	Skills       []swp.SkillStmt  `json:"skills"`        // agent_skills
+	Tools        []swp.ToolStmt    `json:"tools"`         // agent_tools
+	Skills       []swp.SkillStmt   `json:"skills"`        // agent_skills
+	Triggers     []swp.TriggerStmt `json:"triggers"`      // ingress declarado no contrato
 }

@@ -19,6 +19,10 @@ type EnqueueEventApiResponse struct {
 func EnqueueEventHandler(svc service.EventService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		agentHash := chi.URLParam(r, "agentHash")
+		query := r.URL.Query()
+
+		k := query.Get("k")
+		c := query.Get("c")
 
 		var in service.EnqueueEventInput
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
@@ -26,6 +30,9 @@ func EnqueueEventHandler(svc service.EventService) http.HandlerFunc {
 			slog.Error("Invalid event payload", "error", err)
 			return
 		}
+
+		in.Key = k
+		in.Channel = c
 
 		result, err := svc.EnqueueAgentEvent(r.Context(), agentHash, &in)
 		if err != nil {

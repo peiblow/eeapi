@@ -11,6 +11,7 @@ import (
 	"github.com/peiblow/eeapi/internal/database/postgres"
 	"github.com/peiblow/eeapi/internal/database/redis"
 	"github.com/peiblow/eeapi/internal/repository"
+	"github.com/peiblow/eeapi/internal/schema"
 	goredis "github.com/redis/go-redis/v9"
 )
 
@@ -26,18 +27,22 @@ type EventService interface {
 }
 
 type EnqueueEventInput struct {
-	ContextID string          `json:"context_id,omitempty"`
-	Source    string          `json:"source,omitempty"`
-	Payload   json.RawMessage `json:"payload"`
+	ContextID     string          `json:"context_id,omitempty"`
+	CorrelationID string          `json:"correlation_id,omitempty"`
+	Source        string          `json:"source,omitempty"`
+	Key           string          `json:"key,omitempty"`
+	Channel       string          `json:"channel,omitempty"`
+	Payload       json.RawMessage `json:"payload"`
 }
 
 type AgentEvent struct {
-	EventID    string          `json:"event_id"`
-	AgentHash  string          `json:"agent_hash"`
-	ContextID  string          `json:"context_id"`
-	Source     string          `json:"source,omitempty"`
-	Payload    json.RawMessage `json:"payload"`
-	EnqueuedAt int64           `json:"enqueued_at"`
+	EventID       string          `json:"event_id"`
+	AgentHash     string          `json:"agent_hash"`
+	ContextID     string          `json:"context_id"`
+	CorrelationID string          `json:"correlation_id,omitempty"`
+	Source        string          `json:"source,omitempty"`
+	Payload       json.RawMessage `json:"payload"`
+	EnqueuedAt    int64           `json:"enqueued_at"`
 }
 
 type EnqueueEventResult struct {
@@ -63,6 +68,12 @@ func (s *eventService) EnqueueAgentEvent(ctx context.Context, agentHash string, 
 		return nil, ErrPayloadRequired
 	}
 
+	if in.Channel != "" {
+		if _, err := schema.ParseChannel(in.Channel, in.Payload); err != nil {
+			return nil, fmt.Errorf("invalid channel: %w", err)
+		}
+	}
+
 	exists, err := s.agents.AgentExists(ctx, agentHash)
 	if err != nil {
 		return nil, fmt.Errorf("failed to verify agent: %w", err)
@@ -76,13 +87,19 @@ func (s *eventService) EnqueueAgentEvent(ctx context.Context, agentHash string, 
 		contextID = uuid.New().String()
 	}
 
+	correlationID := in.CorrelationID
+	if correlationID == "" {
+		correlationID = uuid.New().String()
+	}
+
 	ev := AgentEvent{
-		EventID:    uuid.New().String(),
-		AgentHash:  agentHash,
-		ContextID:  contextID,
-		Source:     in.Source,
-		Payload:    in.Payload,
-		EnqueuedAt: time.Now().UTC().UnixMilli(),
+		EventID:       uuid.New().String(),
+		AgentHash:     agentHash,
+		ContextID:     contextID,
+		CorrelationID: correlationID,
+		Source:        in.Source,
+		Payload:       in.Payload,
+		EnqueuedAt:    time.Now().UTC().UnixMilli(),
 	}
 
 	data, err := json.Marshal(ev)
