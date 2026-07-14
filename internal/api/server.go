@@ -10,6 +10,7 @@ import (
 	"github.com/peiblow/eeapi/internal/config"
 	"github.com/peiblow/eeapi/internal/database/postgres"
 	"github.com/peiblow/eeapi/internal/database/redis"
+	"github.com/peiblow/eeapi/internal/license"
 	"github.com/peiblow/eeapi/internal/service"
 	"github.com/peiblow/eeapi/internal/swp"
 	"github.com/peiblow/eeapi/internal/trigger"
@@ -25,18 +26,24 @@ type Server struct {
 	clientPub ed25519.PublicKey
 
 	locker *config.ContractLocker
+
+	licenseSvc *license.Service
+}
+
+func (s *Server) SetLicenseService(svc *license.Service) {
+	s.licenseSvc = svc
 }
 
 func NewServer(cfg config.Config, svm *swp.SwpClient, db *postgres.DB, rdb *redis.Client, pub []byte, priv []byte, clientPub []byte, locker *config.ContractLocker) *Server {
 	return &Server{
-		cfg,
-		svm,
-		db,
-		rdb,
-		pub,
-		priv,
-		clientPub,
-		locker,
+		cfg:       cfg,
+		svm:       svm,
+		db:        db,
+		rdb:       rdb,
+		pub:       pub,
+		priv:      priv,
+		clientPub: clientPub,
+		locker:    locker,
 	}
 }
 

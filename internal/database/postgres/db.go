@@ -16,7 +16,10 @@ func Open() (*DB, error) {
 	if dsn == "" {
 		dsn = "postgresql://postgres:postgres@localhost:5432/eeapi?sslmode=disable"
 	}
+	return OpenURL(dsn)
+}
 
+func OpenURL(dsn string) (*DB, error) {
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
 		return nil, err

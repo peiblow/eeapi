@@ -41,6 +41,7 @@ func (s *Server) mount(mgr *trigger.EventManager) http.Handler {
 		r.Use(auth.JWTMiddleware(s.clientPub))
 
 		r.Post("/contracts/deploy", handlers.DeployHandler(contractSvc))
+		r.Post("/licenses", handlers.IssueLicenseHandler(s.licenseSvc))
 		r.Post("/contracts/{id}/execute", handlers.ExecHandler(contractSvc))
 		r.Get("/trace/{contextId}", handlers.TraceHandler(contractSvc))
 		r.Get("/agent/{agentHash}/tools", handlers.GetAgentToolsHandler(contractSvc))

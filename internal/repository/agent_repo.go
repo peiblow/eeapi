@@ -47,10 +47,12 @@ func (r *PsqlAgentRepository) SaveAgent(ctx context.Context, hash, name, version
 		MaxSteps int    `json:"max_steps"`
 		OnDeny   string `json:"on_deny"`
 		OnError  string `json:"on_error"`
+		OnFinish string `json:"on_finish"`
 	}{
 		MaxSteps: info.Behavior.MaxSteps,
 		OnDeny:   info.Behavior.OnDeny,
 		OnError:  info.Behavior.OnError,
+		OnFinish: info.Behavior.OnFinish,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to marshal agent behavior: %w", err)
