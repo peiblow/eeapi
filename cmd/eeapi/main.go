@@ -11,7 +11,6 @@ import (
 	"github.com/peiblow/eeapi/internal/database/postgres"
 	"github.com/peiblow/eeapi/internal/database/redis"
 	"github.com/peiblow/eeapi/internal/keys"
-	"github.com/peiblow/eeapi/internal/license"
 	"github.com/peiblow/eeapi/internal/swp"
 )
 
@@ -81,23 +80,6 @@ func main() {
 	clientPubKey := ed25519.PublicKey(pubKeyBytes[len(pubKeyBytes)-32:])
 
 	server := api.NewServer(cfg, svm, db, rdb, pub, priv, clientPubKey, locker)
-
-	if licURL, licSeed := os.Getenv("LICENSES_DATABASE_URL"), os.Getenv("SYNX_LICENSE_PRIVATE_KEY"); licURL != "" && licSeed != "" {
-		licDB, err := postgres.OpenURL(licURL)
-		if err != nil {
-			slog.Error("Failed to connect to licenses database", "error", err)
-			os.Exit(1)
-		}
-		defer licDB.Close()
-
-		licSvc, err := license.NewService(licSeed, licDB.DB)
-		if err != nil {
-			slog.Error("Failed to init license service", "error", err)
-			os.Exit(1)
-		}
-		server.SetLicenseService(licSvc)
-		slog.Info("-> License issuance enabled")
-	}
 
 	if err := server.Run(); err != nil {
 		slog.Error("Server failed to start", "error", err)

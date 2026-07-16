@@ -26,6 +26,28 @@ func GetAgentToolsHandler(svc service.ContractService) http.HandlerFunc {
 	}
 }
 
+func GateHandler(svc service.ContractService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		agentHash := chi.URLParam(r, "agentHash")
+		tool := chi.URLParam(r, "tool")
+
+		var input map[string]any
+		if r.Body != nil {
+			_ = json.NewDecoder(r.Body).Decode(&input)
+		}
+
+		res, err := svc.RunGate(r.Context(), agentHash, tool, input)
+		if err != nil {
+			slog.Error("gate run failed", "error", err, "agent_hash", agentHash, "tool", tool)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(res)
+	}
+}
+
 func GetAgentDefinitionHandler(svc service.ContractService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		agentHash := chi.URLParam(r, "agentHash")

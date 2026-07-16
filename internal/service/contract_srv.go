@@ -30,6 +30,7 @@ type ContractService interface {
 	ExecuteContract(ctx context.Context, contractID string, payload *swp.ExecPayload) (*ExecuteResult, error)
 	GetAgentTools(ctx context.Context, agentHash string) ([]swp.ToolStmt, error)
 	GetAgentDefinition(ctx context.Context, agentHash string) (*schema.AgentDefinition, error)
+	RunGate(ctx context.Context, agentHash, toolName string, input map[string]any) (*GateResult, error)
 	TraceContext(ctx context.Context, contextID string) (*TraceOutput, error)
 }
 
@@ -128,7 +129,7 @@ func normalizeToolFunctions(tools []swp.ToolStmt) {
 
 func (s *contractService) DeployContract(ctx context.Context, in *DeployInput) (*DeployResult, error) {
 	createdAt := time.Now().UTC()
-	hashInput := fmt.Sprintf("%v:%v:%v:%v", in.Owner, in.ContractName, in.Version, createdAt.UnixMilli())
+	hashInput := fmt.Sprintf("%v:%v:%v", in.Owner, in.ContractName, in.Version)
 	hashBytes := sha256.Sum256([]byte(hashInput))
 	hash := "0x" + hex.EncodeToString(hashBytes[:])
 
@@ -477,6 +478,104 @@ func (s *contractService) GetAgentTools(ctx context.Context, agentHash string) (
 	return s.agentDB.GetAgentTools(ctx, agentHash)
 }
 
+type GateStepEvent struct {
+	Type string         `json:"type"`
+	Data map[string]any `json:"data"`
+}
+
+type GateStep struct {
+	Function      string          `json:"function"`
+	Status        string          `json:"status"`
+	ExecutionHash string          `json:"executionHash,omitempty"`
+	Reason        string          `json:"reason,omitempty"`
+	Events        []GateStepEvent `json:"events,omitempty"`
+}
+
+type GateResult struct {
+	ContextID string     `json:"contextId"`
+	Decision  string     `json:"decision"`
+	Steps     []GateStep `json:"steps"`
+}
+
+func mapGateEvents(events []interface{}) []GateStepEvent {
+	out := make([]GateStepEvent, 0, len(events))
+	for _, ev := range events {
+		evMap, ok := ev.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		evType, _ := evMap["Type"].(string)
+		var data map[string]any
+		if payload, ok := evMap["Payload"].(map[string]interface{}); ok {
+			if d, ok := payload["data"].(map[string]interface{}); ok {
+				data = d
+			}
+		}
+		out = append(out, GateStepEvent{Type: evType, Data: data})
+	}
+	return out
+}
+
+func (s *contractService) RunGate(ctx context.Context, agentHash, toolName string, input map[string]any) (*GateResult, error) {
+	contractHash, err := s.db.GetContractHashByAgentHash(ctx, agentHash)
+	if err != nil {
+		return nil, fmt.Errorf("resolve contract for agent %s: %w", agentHash, err)
+	}
+
+	tools, err := s.agentDB.GetAgentTools(ctx, agentHash)
+	if err != nil {
+		return nil, err
+	}
+	var steps []swp.ToolStep
+	found := false
+	for _, t := range tools {
+		if t.Name == toolName {
+			steps = t.Steps
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, fmt.Errorf("tool %q not found for agent %s", toolName, agentHash)
+	}
+
+	ctxID := uuid.New().String()
+	decision := "APPROVED"
+	results := make([]GateStep, 0, len(steps))
+	for _, st := range steps {
+		res, execErr := s.ExecuteContract(ctx, contractHash, &swp.ExecPayload{
+			Function:  st.Function,
+			Args:      input,
+			ContextId: ctxID,
+			CallerID:  agentHash,
+		})
+
+		passed := execErr == nil && res != nil && res.Response != nil && res.Response.Success
+		gs := GateStep{Function: st.Function}
+		if res != nil {
+			gs.Events = mapGateEvents(res.Events)
+		}
+		if passed {
+			gs.Status = "PASSED"
+		} else {
+			gs.Status = "FAILED"
+			decision = "REJECTED"
+			if res != nil {
+				gs.Reason = res.FailedReason
+			}
+			if gs.Reason == "" && execErr != nil {
+				gs.Reason = execErr.Error()
+			}
+		}
+		results = append(results, gs)
+		if !passed {
+			break
+		}
+	}
+
+	return &GateResult{ContextID: ctxID, Decision: decision, Steps: results}, nil
+}
+
 func (s *contractService) GetAgentDefinition(ctx context.Context, agentHash string) (*schema.AgentDefinition, error) {
 	rec, err := s.agentDB.GetAgent(ctx, agentHash)
 	if err != nil {
@@ -532,6 +631,10 @@ func extractFailedReason(rawError string) string {
 	return strings.TrimSpace(s)
 }
 
+func isDenyEvent(evType string) bool {
+	return strings.HasSuffix(evType, "Rejected") || strings.HasSuffix(evType, "Denied")
+}
+
 func rejectionFromEvents(events []interface{}) string {
 	for _, ev := range events {
 		evMap, ok := ev.(map[string]interface{})
@@ -539,7 +642,7 @@ func rejectionFromEvents(events []interface{}) string {
 			continue
 		}
 		evType, _ := evMap["Type"].(string)
-		if !strings.HasSuffix(evType, "Rejected") {
+		if !isDenyEvent(evType) {
 			continue
 		}
 		if payload, ok := evMap["Payload"].(map[string]interface{}); ok {

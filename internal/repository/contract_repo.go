@@ -13,6 +13,7 @@ type ContractRepository interface {
 	SaveContract(ctx context.Context, contract *contracts.Contract) error
 	SaveContractArtifact(ctx context.Context, artifactHash string, agentHash string) error
 	GetContractByID(ctx context.Context, id string) (*contracts.Contract, error)
+	GetContractHashByAgentHash(ctx context.Context, agentHash string) (string, error)
 }
 
 type PsqlContractRepository struct {
@@ -27,6 +28,9 @@ func (r *PsqlContractRepository) SaveContract(ctx context.Context, contract *con
 	query := `
 		INSERT INTO contracts (name, owner, artifact_hash, created_at)
 		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (artifact_hash) DO UPDATE SET
+			name = EXCLUDED.name,
+			owner = EXCLUDED.owner
 	`
 	_, err := r.db.ExecContext(ctx, query, contract.Name, contract.Owner, contract.ArtifactHash, contract.CreatedAt)
 
@@ -34,7 +38,8 @@ func (r *PsqlContractRepository) SaveContract(ctx context.Context, contract *con
 }
 
 func (r *PsqlContractRepository) SaveContractArtifact(ctx context.Context, artifactHash string, agentHash string) error {
-	query := `INSERT INTO contract_artifacts (_hash, created_at, agent_hash) VALUES ($1, $2, $3)`
+	query := `INSERT INTO contract_artifacts (_hash, created_at, agent_hash) VALUES ($1, $2, $3)
+		ON CONFLICT (_hash) DO UPDATE SET agent_hash = EXCLUDED.agent_hash`
 
 	_, err := r.db.ExecContext(
 		ctx,
@@ -45,6 +50,16 @@ func (r *PsqlContractRepository) SaveContractArtifact(ctx context.Context, artif
 	)
 
 	return err
+}
+
+func (r *PsqlContractRepository) GetContractHashByAgentHash(ctx context.Context, agentHash string) (string, error) {
+	var hash string
+	err := r.db.QueryRowContext(
+		ctx,
+		`SELECT _hash FROM contract_artifacts WHERE agent_hash = $1 ORDER BY created_at DESC LIMIT 1`,
+		agentHash,
+	).Scan(&hash)
+	return hash, err
 }
 
 func (r *PsqlContractRepository) GetContractByID(ctx context.Context, artifactHash string) (*contracts.Contract, error) {

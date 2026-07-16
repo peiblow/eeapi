@@ -61,7 +61,13 @@ func (r *PsqlAgentRepository) SaveAgent(ctx context.Context, hash, name, version
 	query := `
 		INSERT INTO contract_agents (_hash, name, version, purpose, model, behavior, system_prompt)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		ON CONFLICT (_hash) DO NOTHING
+		ON CONFLICT (_hash) DO UPDATE SET
+			name = EXCLUDED.name,
+			version = EXCLUDED.version,
+			purpose = EXCLUDED.purpose,
+			model = EXCLUDED.model,
+			behavior = EXCLUDED.behavior,
+			system_prompt = EXCLUDED.system_prompt
 	`
 	_, err = r.db.ExecContext(ctx, query,
 		hash, name, version, info.Purpose, modelJSON, behaviorJSON, info.Behavior.SystemPrompt,
@@ -70,7 +76,11 @@ func (r *PsqlAgentRepository) SaveAgent(ctx context.Context, hash, name, version
 }
 
 func (r *PsqlAgentRepository) SaveAgentTools(ctx context.Context, agentHash string, tools []swp.ToolStmt) error {
-	query := `INSERT INTO agent_tools (agent_hash, name, description, steps) VALUES ($1, $2, $3, $4) ON CONFLICT (agent_hash, name) DO NOTHING`
+	if _, err := r.db.ExecContext(ctx, `DELETE FROM agent_tools WHERE agent_hash = $1`, agentHash); err != nil {
+		return fmt.Errorf("failed to clear tools: %w", err)
+	}
+
+	query := `INSERT INTO agent_tools (agent_hash, name, description, steps) VALUES ($1, $2, $3, $4)`
 
 	for _, tool := range tools {
 		stepsJson, err := json.Marshal(tool.Steps)
@@ -87,7 +97,11 @@ func (r *PsqlAgentRepository) SaveAgentTools(ctx context.Context, agentHash stri
 }
 
 func (r *PsqlAgentRepository) SaveAgentSkills(ctx context.Context, agentHash string, skills []swp.SkillStmt) error {
-	query := `INSERT INTO agent_skills (agent_hash, name, content, uses) VALUES ($1, $2, $3, $4) ON CONFLICT (agent_hash, name) DO NOTHING`
+	if _, err := r.db.ExecContext(ctx, `DELETE FROM agent_skills WHERE agent_hash = $1`, agentHash); err != nil {
+		return fmt.Errorf("failed to clear skills: %w", err)
+	}
+
+	query := `INSERT INTO agent_skills (agent_hash, name, content, uses) VALUES ($1, $2, $3, $4)`
 
 	for _, skill := range skills {
 		uses := skill.Uses
