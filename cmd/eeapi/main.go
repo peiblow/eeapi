@@ -35,6 +35,13 @@ func main() {
 
 	slog.Info("-> Connected to SVM server!")
 
+	if err := postgres.Migrate(); err != nil {
+		slog.Error("Failed to run database migrations", "error", err)
+		os.Exit(1)
+	}
+
+	slog.Info("-> Database migrations up to date!")
+
 	db, err := postgres.Open()
 	if err != nil {
 		slog.Error("Failed to connect to database", "error", err)
