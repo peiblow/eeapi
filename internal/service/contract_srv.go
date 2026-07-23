@@ -30,7 +30,7 @@ type ContractService interface {
 	ExecuteContract(ctx context.Context, contractID string, payload *swp.ExecPayload) (*ExecuteResult, error)
 	GetAgentTools(ctx context.Context, agentHash string) ([]swp.ToolStmt, error)
 	GetAgentDefinition(ctx context.Context, agentHash string) (*schema.AgentDefinition, error)
-	RunGate(ctx context.Context, agentHash, toolName string, input map[string]any) (*GateResult, error)
+	RunGate(ctx context.Context, contextID string, agentHash, toolName string, input map[string]any) (*GateResult, error)
 	TraceContext(ctx context.Context, contextID string) (*TraceOutput, error)
 }
 
@@ -516,7 +516,7 @@ func mapGateEvents(events []interface{}) []GateStepEvent {
 	return out
 }
 
-func (s *contractService) RunGate(ctx context.Context, agentHash, toolName string, input map[string]any) (*GateResult, error) {
+func (s *contractService) RunGate(ctx context.Context, contextID string, agentHash, toolName string, input map[string]any) (*GateResult, error) {
 	contractHash, err := s.db.GetContractHashByAgentHash(ctx, agentHash)
 	if err != nil {
 		return nil, fmt.Errorf("resolve contract for agent %s: %w", agentHash, err)
@@ -539,7 +539,11 @@ func (s *contractService) RunGate(ctx context.Context, agentHash, toolName strin
 		return nil, fmt.Errorf("tool %q not found for agent %s", toolName, agentHash)
 	}
 
-	ctxID := uuid.New().String()
+	ctxID := contextID
+	if ctxID == "" {
+		ctxID = uuid.New().String()
+	}
+
 	decision := "APPROVED"
 	results := make([]GateStep, 0, len(steps))
 	for _, st := range steps {

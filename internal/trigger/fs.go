@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/google/uuid"
 	"github.com/peiblow/eeapi/internal/database/redis"
 	"github.com/peiblow/eeapi/internal/schema"
 	"github.com/peiblow/eeapi/internal/service"
@@ -189,8 +190,9 @@ func (f *FSProvider) emit(events service.EventService, spec fsSpec, path, op str
 	}
 
 	if _, err := events.EnqueueAgentEvent(context.Background(), spec.agent.Hash, &service.EnqueueEventInput{
-		Source:  "filesystem:" + op,
-		Payload: payload,
+		ContextID: uuid.New().String(),
+		Source:    "filesystem:" + op,
+		Payload:   payload,
 	}); err != nil {
 		slog.Error("fs trigger enqueue failed", "agent", spec.agent.Hash, "path", path, "error", err)
 		return

@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/peiblow/eeapi/internal/service"
 )
 
@@ -109,8 +110,9 @@ func webhookHandler(events service.EventService, agentHash, channel string, veri
 		}
 
 		res, err := events.EnqueueAgentEvent(r.Context(), agentHash, &service.EnqueueEventInput{
-			Source:  source,
-			Payload: body,
+			ContextID: uuid.New().String(),
+			Source:    source,
+			Payload:   body,
 		})
 		if err != nil {
 			switch {

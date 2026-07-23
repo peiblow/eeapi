@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/peiblow/eeapi/internal/schema"
 	"github.com/peiblow/eeapi/internal/service"
 	"github.com/robfig/cron/v3"
@@ -78,8 +79,9 @@ func fire(events service.EventService, agentHash, source, text string) {
 	}
 
 	if _, err := events.EnqueueAgentEvent(context.Background(), agentHash, &service.EnqueueEventInput{
-		Source:  source,
-		Payload: payload,
+		ContextID: uuid.New().String(),
+		Source:    source,
+		Payload:   payload,
 	}); err != nil {
 		slog.Error("cron trigger enqueue failed", "agent", agentHash, "source", source, "error", err)
 		return
